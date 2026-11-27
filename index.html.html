@@ -1,0 +1,166 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>하늘 비행기 찾기</title>
+<style>
+:root{--bg:#0b1118;--fg:#e8f0f6;--dim:#8da2b3;--acc:#ffb400;--line:rgba(232,240,246,.35);color-scheme:dark}
+*{box-sizing:border-box}
+html,body{height:100%;margin:0;background:var(--bg);color:var(--fg);font-family:system-ui,-apple-system,"Noto Sans KR",sans-serif;overflow:hidden}
+video{position:fixed;inset:0;width:100%;height:100%;object-fit:cover}
+canvas{position:fixed;inset:0;width:100%;height:100%}
+#start{position:fixed;inset:0;display:flex;flex-direction:column;justify-content:center;gap:16px;padding:32px;background:var(--bg);z-index:5}
+#start h1{font-size:2rem;margin:0;line-height:1.2}
+#start p{margin:0;color:var(--dim);max-width:34ch;line-height:1.6}
+button{font:inherit;border:0;border-radius:8px;padding:14px 18px;background:var(--acc);color:#1a1200;font-weight:700}
+button:focus-visible,input:focus-visible{outline:3px solid #fff;outline-offset:2px}
+#card{position:fixed;left:12px;right:12px;bottom:calc(12px + env(safe-area-inset-bottom,0px));background:rgba(11,17,24,.88);border:1px solid var(--line);border-radius:12px;padding:14px 16px;z-index:2}
+#card .cs{font-size:1.5rem;font-weight:700;color:var(--acc)}
+#card .rt{font-size:1.15rem;margin:2px 0 6px}
+#card .meta{color:var(--dim);font-size:.85rem;line-height:1.5}
+#top{position:fixed;top:calc(8px + env(safe-area-inset-top,0px));left:12px;right:12px;display:flex;justify-content:space-between;gap:8px;font-size:.8rem;color:var(--dim);z-index:2;align-items:center}
+#top span{background:rgba(11,17,24,.7);padding:6px 10px;border-radius:6px}
+#cal{width:110px}
+</style>
+</head>
+<body>
+<video id="v" playsinline muted></video>
+<canvas id="c"></canvas>
+<div id="top"><span id="st">대기 중</span><span>방향 보정 <input id="cal" type="range" min="-45" max="45" value="0"></span></div>
+<div id="card"><div class="cs">조준 중…</div><div class="meta">비행기 쪽으로 휴대폰을 향해 보세요.</div></div>
+<div id="start">
+<h1>하늘 비행기 찾기</h1>
+<p>휴대폰을 하늘의 비행기 쪽으로 향하면 편명, 출발지와 목적지를 보여 줍니다. 위치, 방향 센서, 카메라 권한이 필요합니다.</p>
+<button id="go">시작하기</button>
+<p id="err" style="color:#ff8a80"></p>
+</div>
+<script>
+const $=id=>document.getElementById(id);
+const R=Math.PI/180, EARTH=6371000;
+let me=null, planes=[], sel=null, orient={a:0,b:90,g:0,ios:null}, cache={};
+const cv=$('c'), cx=cv.getContext('2d');
+
+function fit(){cv.width=innerWidth*devicePixelRatio;cv.height=innerHeight*devicePixelRatio;cx.setTransform(devicePixelRatio,0,0,devicePixelRatio,0,0)}
+addEventListener('resize',fit);fit();
+
+$('go').onclick=async()=>{
+  try{
+    if(typeof DeviceOrientationEvent!=='undefined'&&DeviceOrientationEvent.requestPermission){
+      if(await DeviceOrientationEvent.requestPermission()!=='granted')throw new Error('방향 센서 권한이 필요합니다.');
+    }
+    addEventListener('deviceorientationabsolute',onOri,true);
+    addEventListener('deviceorientation',onOri,true);
+    try{
+      const s=await navigator.mediaDevices.getUserMedia({video:{facingMode:{ideal:'environment'}},audio:false});
+      $('v').srcObject=s;await $('v').play();
+    }catch(e){$('st').textContent='카메라 없이 실행'}
+    me=await new Promise((ok,no)=>navigator.geolocation.watchPosition(p=>{
+      const first=!me;me={lat:p.coords.latitude,lon:p.coords.longitude,alt:p.coords.altitude||0};
+      if(first){ok(me);poll()}
+    },()=>no(new Error('위치 권한이 필요합니다.')),{enableHighAccuracy:true}));
+    $('start').style.display='none';
+    setInterval(poll,10000);requestAnimationFrame(draw);
+  }catch(e){$('err').textContent=e.message||String(e)}
+};
+
+function onOri(e){
+  if(e.type==='deviceorientation'&&orient.abs)return;
+  if(e.type==='deviceorientationabsolute')orient.abs=true;
+  if(e.alpha==null)return;
+  orient.a=e.alpha;orient.b=e.beta;orient.g=e.gamma;
+  orient.ios=e.webkitCompassHeading!=null?e.webkitCompassHeading:null;
+}
+
+// 카메라가 향한 방향(방위각, 고각)
+function aim(){
+  let a=orient.a;
+  if(orient.ios!=null)a=360-orient.ios;
+  const A=a*R,B=orient.b*R,G=orient.g*R;
+  const vx=-(Math.cos(A)*Math.sin(G)+Math.sin(A)*Math.sin(B)*Math.cos(G));
+  const vy=-(Math.sin(A)*Math.sin(G)-Math.cos(A)*Math.sin(B)*Math.cos(G));
+  const vz=-(Math.cos(B)*Math.cos(G));
+  let h=Math.atan2(vx,vy)/R+ +$('cal').value;
+  return{az:(h+360)%360,el:Math.asin(Math.max(-1,Math.min(1,vz)))/R};
+}
+
+async function poll(){
+  if(!me)return;
+  const d=0.6,u=`https://opensky-network.org/api/states/all?lamin=${me.lat-d}&lamax=${me.lat+d}&lomin=${me.lon-d}&lomax=${me.lon+d}`;
+  try{
+    const r=await fetch(u);if(!r.ok)throw new Error(r.status);
+    const j=await r.json();
+    planes=(j.states||[]).filter(s=>s[5]!=null&&s[6]!=null&&!s[8]).map(s=>({
+      icao:s[0],cs:(s[1]||'').trim(),lat:s[6],lon:s[5],alt:s[13]??s[7]??0,
+      v:s[9]||0,trk:s[10]||0,t:s[3]||s[4]||Date.now()/1000,vr:s[11]||0
+    }));
+    $('st').textContent=`항공기 ${planes.length}대`;
+  }catch(e){$('st').textContent='데이터 오류 (잠시 후 재시도)'}
+}
+
+// 지연 보정: 속도와 진행 방향으로 현재 위치 추정
+function where(p){
+  const dt=Math.min(Date.now()/1000-p.t,60);
+  const dist=p.v*dt, tr=p.trk*R;
+  const lat=p.lat+(dist*Math.cos(tr)/EARTH)/R;
+  const lon=p.lon+(dist*Math.sin(tr)/(EARTH*Math.cos(p.lat*R)))/R;
+  const alt=p.alt+p.vr*dt;
+  const dN=(lat-me.lat)*R*EARTH, dE=(lon-me.lon)*R*EARTH*Math.cos(me.lat*R);
+  const hd=Math.hypot(dN,dE);
+  return{az:(Math.atan2(dE,dN)/R+360)%360,el:Math.atan2(alt-me.alt,hd)/R,km:hd/1000,alt};
+}
+const diff=(a,b)=>((a-b+540)%360)-180;
+
+function draw(){
+  const W=innerWidth,H=innerHeight;cx.clearRect(0,0,W,H);
+  const m=aim(),HF=48,VF=64;let best=null,bd=99;
+  for(const p of planes){
+    const w=where(p);p.w=w;
+    const dx=diff(w.az,m.az),dy=w.el-m.el,ang=Math.hypot(dx,dy);
+    if(ang<bd){bd=ang;best=p}
+    if(Math.abs(dx)<HF&&Math.abs(dy)<VF){
+      const x=W/2+dx/HF*W, y=H/2-dy/VF*H;
+      cx.fillStyle='rgba(232,240,246,.8)';cx.beginPath();cx.arc(x,y,4,0,7);cx.fill();
+      cx.font='12px system-ui';cx.fillText(p.cs||p.icao,x+8,y+4);
+    }
+  }
+  // 조준선
+  cx.strokeStyle='#ffb400';cx.lineWidth=2;cx.beginPath();cx.arc(W/2,H/2,28,0,7);cx.stroke();
+  cx.beginPath();cx.moveTo(W/2-40,H/2);cx.lineTo(W/2-20,H/2);cx.moveTo(W/2+20,H/2);cx.lineTo(W/2+40,H/2);cx.stroke();
+  if(best&&bd<12){if(!sel||sel.icao!==best.icao){sel=best;lookup(best)}}
+  else if(bd>=18)sel=null;
+  render(m);
+  requestAnimationFrame(draw);
+}
+
+async function lookup(p){
+  if(cache[p.icao])return;
+  cache[p.icao]={};
+  try{
+    if(p.cs){
+      const r=await (await fetch('https://api.adsbdb.com/v0/callsign/'+encodeURIComponent(p.cs))).json();
+      const f=r.response&&r.response.flightroute;
+      if(f)cache[p.icao].route=f;
+    }
+    const a=await (await fetch('https://api.adsbdb.com/v0/aircraft/'+p.icao)).json();
+    if(a.response&&a.response.aircraft)cache[p.icao].ac=a.response.aircraft;
+  }catch(e){}
+}
+
+let lastHTML='';
+function render(m){
+  let h;
+  if(!sel||!sel.w){h=`<div class="cs">조준 중…</div><div class="meta">비행기 쪽으로 휴대폰을 향해 보세요.<br>조준 방향: 방위 ${m.az.toFixed(0)}° / 고각 ${m.el.toFixed(0)}°</div>`}
+  else{
+    const c=cache[sel.icao]||{},rt=c.route,ac=c.ac,w=sel.w;
+    const o=rt&&rt.origin?`${rt.origin.municipality||rt.origin.name} (${rt.origin.iata_code||rt.origin.icao_code})`:'조회 중…';
+    const d=rt&&rt.destination?`${rt.destination.municipality||rt.destination.name} (${rt.destination.iata_code||rt.destination.icao_code})`:'';
+    h=`<div class="cs">${sel.cs||sel.icao}${rt&&rt.airline?' · '+rt.airline.name:''}</div>
+    <div class="rt">${o}${d?' → '+d:''}</div>
+    <div class="meta">${ac?ac.type+' · ':''}고도 ${Math.round(w.alt*3.281/100)*100}ft · 속도 ${Math.round(sel.v*1.944)}kt · 거리 ${w.km.toFixed(1)}km</div>`;
+  }
+  if(h!==lastHTML){$('card').innerHTML=h;lastHTML=h}
+}
+</script>
+</body>
+</html>
