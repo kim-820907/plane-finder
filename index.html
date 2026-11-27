@@ -38,6 +38,9 @@ button:focus-visible,input:focus-visible{outline:3px solid #fff;outline-offset:2
 <script>
 const $=id=>document.getElementById(id);
 const R=Math.PI/180, EARTH=6371000;
+// 중계 서버 주소: 주소 뒤에 ?proxy=https://... 를 붙여 한 번 열면 저장됩니다
+try{const q=new URLSearchParams(location.search).get('proxy');if(q)localStorage.setItem('proxy',q.replace(/\/+$/,''))}catch(e){}
+let PROXY='';try{PROXY=localStorage.getItem('proxy')||''}catch(e){}
 let me=null, planes=[], sel=null, orient={a:0,b:90,g:0,ios:null}, cache={};
 const cv=$('c'), cx=cv.getContext('2d');
 
@@ -85,6 +88,7 @@ function aim(){
 }
 
 const SRC=[
+ ...(PROXY?[['proxy',()=>`${PROXY}/point/${me.lat.toFixed(3)}/${me.lon.toFixed(3)}/40`]]:[]),
  ['adsb.lol',()=>`https://api.adsb.lol/v2/point/${me.lat.toFixed(3)}/${me.lon.toFixed(3)}/40`],
  ['airplanes.live',()=>`https://api.airplanes.live/v2/point/${me.lat.toFixed(3)}/${me.lon.toFixed(3)}/40`],
  ['adsb.fi',()=>`https://opendata.adsb.fi/api/v2/lat/${me.lat.toFixed(3)}/lon/${me.lon.toFixed(3)}/dist/40`]
@@ -156,11 +160,11 @@ async function lookup(p){
   cache[p.icao]={};
   try{
     if(p.cs){
-      const r=await (await fetch('https://api.adsbdb.com/v0/callsign/'+encodeURIComponent(p.cs))).json();
+      const r=await (await fetch((PROXY?PROXY+'/callsign/':'https://api.adsbdb.com/v0/callsign/')+encodeURIComponent(p.cs))).json();
       const f=r.response&&r.response.flightroute;
       if(f)cache[p.icao].route=f;
     }
-    const a=await (await fetch('https://api.adsbdb.com/v0/aircraft/'+p.icao)).json();
+    const a=await (await fetch((PROXY?PROXY+'/aircraft/':'https://api.adsbdb.com/v0/aircraft/')+p.icao)).json();
     if(a.response&&a.response.aircraft)cache[p.icao].ac=a.response.aircraft;
   }catch(e){}
 }
