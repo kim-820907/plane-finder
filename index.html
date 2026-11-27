@@ -85,17 +85,28 @@ function aim(){
 }
 
 async function poll(){
-  if(!me)return;
-  const d=0.6,u=`https://opensky-network.org/api/states/all?lamin=${me.lat-d}&lamax=${me.lat+d}&lomin=${me.lon-d}&lomax=${me.lon+d}`;
+  if(!me||document.hidden)return;
+  let err1='';
   try{
-    const r=await fetch(u);if(!r.ok)throw new Error(r.status);
+    const r=await fetch(`https://api.adsb.lol/v2/point/${me.lat.toFixed(3)}/${me.lon.toFixed(3)}/40`);
+    if(!r.ok)throw new Error(r.status);
+    const j=await r.json(),now=Date.now()/1000;
+    planes=(j.ac||[]).filter(a=>a.lat!=null&&a.lon!=null&&typeof a.alt_baro==='number').map(a=>({
+      icao:a.hex,cs:(a.flight||'').trim(),lat:a.lat,lon:a.lon,alt:a.alt_baro*0.3048,
+      v:(a.gs||0)*0.5144,trk:a.track||0,t:now-(a.seen_pos||0),vr:(a.baro_rate||0)*0.00508,type:a.t
+    }));
+    $('st').textContent=`항공기 ${planes.length}대`;return;
+  }catch(e){err1=String(e.message||e)}
+  try{
+    const d=0.6,r=await fetch(`https://opensky-network.org/api/states/all?lamin=${me.lat-d}&lamax=${me.lat+d}&lomin=${me.lon-d}&lomax=${me.lon+d}`);
+    if(!r.ok)throw new Error(r.status);
     const j=await r.json();
     planes=(j.states||[]).filter(s=>s[5]!=null&&s[6]!=null&&!s[8]).map(s=>({
       icao:s[0],cs:(s[1]||'').trim(),lat:s[6],lon:s[5],alt:s[13]??s[7]??0,
       v:s[9]||0,trk:s[10]||0,t:s[3]||s[4]||Date.now()/1000,vr:s[11]||0
     }));
-    $('st').textContent=`항공기 ${planes.length}대`;
-  }catch(e){$('st').textContent='데이터 오류 (잠시 후 재시도)'}
+    $('st').textContent=`항공기 ${planes.length}대 (보조 서버)`;
+  }catch(e){$('st').textContent=`데이터 오류: 1차 ${err1} / 2차 ${e.message||e}`}
 }
 
 // 지연 보정: 속도와 진행 방향으로 현재 위치 추정
@@ -157,7 +168,7 @@ function render(m){
     const d=rt&&rt.destination?`${rt.destination.municipality||rt.destination.name} (${rt.destination.iata_code||rt.destination.icao_code})`:'';
     h=`<div class="cs">${sel.cs||sel.icao}${rt&&rt.airline?' · '+rt.airline.name:''}</div>
     <div class="rt">${o}${d?' → '+d:''}</div>
-    <div class="meta">${ac?ac.type+' · ':''}고도 ${Math.round(w.alt*3.281/100)*100}ft · 속도 ${Math.round(sel.v*1.944)}kt · 거리 ${w.km.toFixed(1)}km</div>`;
+    <div class="meta">${ac?ac.type+' · ':(sel.type?sel.type+' · ':'')}고도 ${Math.round(w.alt*3.281/100)*100}ft · 속도 ${Math.round(sel.v*1.944)}kt · 거리 ${w.km.toFixed(1)}km</div>`;
   }
   if(h!==lastHTML){$('card').innerHTML=h;lastHTML=h}
 }
