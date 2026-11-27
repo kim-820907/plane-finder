@@ -84,19 +84,26 @@ function aim(){
   return{az:(h+360)%360,el:Math.asin(Math.max(-1,Math.min(1,vz)))/R};
 }
 
+const SRC=[
+ ['adsb.lol',()=>`https://api.adsb.lol/v2/point/${me.lat.toFixed(3)}/${me.lon.toFixed(3)}/40`],
+ ['airplanes.live',()=>`https://api.airplanes.live/v2/point/${me.lat.toFixed(3)}/${me.lon.toFixed(3)}/40`],
+ ['adsb.fi',()=>`https://opendata.adsb.fi/api/v2/lat/${me.lat.toFixed(3)}/lon/${me.lon.toFixed(3)}/dist/40`]
+];
 async function poll(){
   if(!me||document.hidden)return;
-  let err1='';
-  try{
-    const r=await fetch(`https://api.adsb.lol/v2/point/${me.lat.toFixed(3)}/${me.lon.toFixed(3)}/40`);
-    if(!r.ok)throw new Error(r.status);
-    const j=await r.json(),now=Date.now()/1000;
-    planes=(j.ac||[]).filter(a=>a.lat!=null&&a.lon!=null&&typeof a.alt_baro==='number').map(a=>({
-      icao:a.hex,cs:(a.flight||'').trim(),lat:a.lat,lon:a.lon,alt:a.alt_baro*0.3048,
-      v:(a.gs||0)*0.5144,trk:a.track||0,t:now-(a.seen_pos||0),vr:(a.baro_rate||0)*0.00508,type:a.t
-    }));
-    $('st').textContent=`항공기 ${planes.length}대`;return;
-  }catch(e){err1=String(e.message||e)}
+  const errs=[];
+  for(const [name,url] of SRC){
+    try{
+      const r=await fetch(url());
+      if(!r.ok)throw new Error(r.status);
+      const j=await r.json(),now=Date.now()/1000;
+      planes=(j.ac||j.aircraft||[]).filter(a=>a.lat!=null&&a.lon!=null&&typeof a.alt_baro==='number').map(a=>({
+        icao:a.hex,cs:(a.flight||'').trim(),lat:a.lat,lon:a.lon,alt:a.alt_baro*0.3048,
+        v:(a.gs||0)*0.5144,trk:a.track||0,t:now-(a.seen_pos||0),vr:(a.baro_rate||0)*0.00508,type:a.t
+      }));
+      $('st').textContent=`항공기 ${planes.length}대 (${name})`;return;
+    }catch(e){errs.push(name+': '+(e.message||e))}
+  }
   try{
     const d=0.6,r=await fetch(`https://opensky-network.org/api/states/all?lamin=${me.lat-d}&lamax=${me.lat+d}&lomin=${me.lon-d}&lomax=${me.lon+d}`);
     if(!r.ok)throw new Error(r.status);
@@ -105,8 +112,8 @@ async function poll(){
       icao:s[0],cs:(s[1]||'').trim(),lat:s[6],lon:s[5],alt:s[13]??s[7]??0,
       v:s[9]||0,trk:s[10]||0,t:s[3]||s[4]||Date.now()/1000,vr:s[11]||0
     }));
-    $('st').textContent=`항공기 ${planes.length}대 (보조 서버)`;
-  }catch(e){$('st').textContent=`데이터 오류: 1차 ${err1} / 2차 ${e.message||e}`}
+    $('st').textContent=`항공기 ${planes.length}대 (opensky)`;
+  }catch(e){errs.push('opensky: '+(e.message||e));$('st').textContent='오류 → '+errs.join(' | ')}
 }
 
 // 지연 보정: 속도와 진행 방향으로 현재 위치 추정
