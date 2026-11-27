@@ -3,32 +3,40 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="비행기 찾기">
+<link rel="apple-touch-icon" href="icon.png">
 <title>하늘 비행기 찾기</title>
 <style>
 :root{--bg:#0b1118;--fg:#e8f0f6;--dim:#8da2b3;--acc:#ffb400;--line:rgba(232,240,246,.35);color-scheme:dark}
 *{box-sizing:border-box}
 html,body{height:100%;margin:0;background:var(--bg);color:var(--fg);font-family:system-ui,-apple-system,"Noto Sans KR",sans-serif;overflow:hidden}
 video{position:fixed;inset:0;width:100%;height:100%;object-fit:cover}
-canvas{position:fixed;inset:0;width:100%;height:100%}
+canvas{position:fixed;inset:0;width:100%;height:100%;touch-action:manipulation}
 #start{position:fixed;inset:0;display:flex;flex-direction:column;justify-content:center;gap:16px;padding:32px;background:var(--bg);z-index:5}
 #start h1{font-size:2rem;margin:0;line-height:1.2}
 #start p{margin:0;color:var(--dim);max-width:34ch;line-height:1.6}
 button{font:inherit;border:0;border-radius:8px;padding:14px 18px;background:var(--acc);color:#1a1200;font-weight:700}
+button[hidden]{display:none}
 button:focus-visible,input:focus-visible{outline:3px solid #fff;outline-offset:2px}
-#card{position:fixed;left:12px;right:12px;bottom:calc(12px + env(safe-area-inset-bottom,0px));background:rgba(11,17,24,.88);border:1px solid var(--line);border-radius:12px;padding:14px 16px;z-index:2}
+#card{position:fixed;left:12px;right:12px;bottom:calc(12px + env(safe-area-inset-bottom,0px));background:rgba(11,17,24,.88);border:1px solid var(--line);border-radius:12px;padding:14px 16px;z-index:2;pointer-events:none}
 #card .cs{font-size:1.5rem;font-weight:700;color:var(--acc)}
 #card .rt{font-size:1.15rem;margin:2px 0 6px}
 #card .meta{color:var(--dim);font-size:.85rem;line-height:1.5}
-#top{position:fixed;top:calc(8px + env(safe-area-inset-top,0px));left:12px;right:12px;display:flex;justify-content:space-between;gap:8px;font-size:.8rem;color:var(--dim);z-index:2;align-items:center}
+#card .vs{color:var(--fg);font-size:.95rem;margin-top:4px}
+#top{position:fixed;top:calc(8px + env(safe-area-inset-top,0px));left:12px;right:12px;display:flex;flex-wrap:wrap;justify-content:space-between;gap:8px;font-size:.8rem;color:var(--dim);z-index:2;align-items:center}
 #top span{background:rgba(11,17,24,.7);padding:6px 10px;border-radius:6px}
-#cal{width:110px}
+#cal{width:110px;vertical-align:middle}
+#fit{padding:8px 12px;font-size:.85rem}
 </style>
 </head>
 <body>
 <video id="v" playsinline muted></video>
 <canvas id="c"></canvas>
-<div id="top"><span id="st">대기 중</span><span>방향 보정 <input id="cal" type="range" min="-45" max="45" value="0"></span></div>
-<div id="card"><div class="cs">조준 중…</div><div class="meta">비행기 쪽으로 휴대폰을 향해 보세요.</div></div>
+<div id="top"><span id="st">대기 중</span><span>방향 보정 <input id="cal" type="range" min="-90" max="90" value="0"></span><button id="fit" hidden>조준선에 맞추기</button></div>
+<div id="card"></div>
 <div id="start">
 <h1>하늘 비행기 찾기</h1>
 <p>휴대폰을 하늘의 비행기 쪽으로 향하면 편명, 출발지와 목적지를 보여 줍니다. 위치, 방향 센서, 카메라 권한이 필요합니다.</p>
@@ -38,14 +46,29 @@ button:focus-visible,input:focus-visible{outline:3px solid #fff;outline-offset:2
 <script>
 const $=id=>document.getElementById(id);
 const R=Math.PI/180, EARTH=6371000;
-// 중계 서버 주소: 주소 뒤에 ?proxy=https://... 를 붙여 한 번 열면 저장됩니다
-try{const q=new URLSearchParams(location.search).get('proxy');if(q)localStorage.setItem('proxy',q.replace(/\/+$/,''))}catch(e){}
-let PROXY='';try{PROXY=localStorage.getItem('proxy')||''}catch(e){}
-let me=null, planes=[], sel=null, orient={a:0,b:90,g:0,ios:null}, cache={};
-const cv=$('c'), cx=cv.getContext('2d');
-
+const DEFAULT_PROXY='https://plane-relay.pilotgd82.workers.dev';
+let PROXY=DEFAULT_PROXY,cal=0;
+try{
+  const q=new URLSearchParams(location.search).get('proxy');
+  if(q)localStorage.setItem('proxy',q.replace(/\/+$/,''));
+  PROXY=localStorage.getItem('proxy')||DEFAULT_PROXY;
+  cal=+localStorage.getItem('cal')||0;
+}catch(e){}
+const AL={KAL:'대한항공',AAR:'아시아나항공',JJA:'제주항공',JNA:'진에어',TWB:'티웨이항공',ESR:'이스타항공',ASV:'에어서울',ABL:'에어부산',APZ:'에어프레미아',EOK:'에어로케이',CCA:'중국국제항공',CES:'중국동방항공',CSN:'중국남방항공',CHH:'하이난항공',CSZ:'선전항공',CQH:'춘추항공',CXA:'샤먼항공',CDG:'산둥항공',JAL:'일본항공',ANA:'전일본공수',APJ:'피치항공',SIA:'싱가포르항공',CPA:'캐세이퍼시픽',HDA:'캐세이드래곤',CRK:'홍콩항공',HKE:'홍콩익스프레스',EVA:'에바항공',CAL:'중화항공',THA:'타이항공',VJC:'비엣젯',HVN:'베트남항공',PAL:'필리핀항공',CEB:'세부퍼시픽',UAL:'유나이티드항공',DAL:'델타항공',AAL:'아메리칸항공',FDX:'페덱스',UPS:'UPS',GTI:'아틀라스항공',ACA:'에어캐나다',DLH:'루프트한자',AFR:'에어프랑스',BAW:'영국항공',KLM:'KLM',UAE:'에미레이트항공',QTR:'카타르항공',ETD:'에티하드항공',TUR:'터키항공',FIN:'핀에어',AIC:'에어인디아',MAS:'말레이시아항공',AXM:'에어아시아'};
+const AP={ICN:'인천',GMP:'김포',PUS:'부산',CJU:'제주',TAE:'대구',CJJ:'청주',KWJ:'광주',MWX:'무안',YNY:'양양',NRT:'도쿄 나리타',HND:'도쿄 하네다',KIX:'오사카 간사이',FUK:'후쿠오카',CTS:'삿포로',NGO:'나고야',OKA:'오키나와',PVG:'상하이 푸둥',SHA:'상하이 훙차오',PEK:'베이징 서우두',PKX:'베이징 다싱',TSN:'톈진',CAN:'광저우',SZX:'선전',TAO:'칭다오',DLC:'다롄',SHE:'선양',HKG:'홍콩',TPE:'타이베이',BKK:'방콕',SIN:'싱가포르',MNL:'마닐라',CEB:'세부',HAN:'하노이',SGN:'호치민',DAD:'다낭',LAX:'로스앤젤레스',SFO:'샌프란시스코',JFK:'뉴욕 JFK',SEA:'시애틀',ANC:'앵커리지',LHR:'런던 히드로',CDG:'파리',FRA:'프랑크푸르트',DXB:'두바이',IST:'이스탄불'};
+let me=null,planes=[],sel=null,lock=null,orient={a:0,b:90,g:0,ios:null},cache={};
+const cv=$('c'),cx=cv.getContext('2d');
 function fit(){cv.width=innerWidth*devicePixelRatio;cv.height=innerHeight*devicePixelRatio;cx.setTransform(devicePixelRatio,0,0,devicePixelRatio,0,0)}
 addEventListener('resize',fit);fit();
+function setCal(v){cal=Math.max(-180,Math.min(180,v));$('cal').value=Math.max(-90,Math.min(90,cal));try{localStorage.setItem('cal',cal)}catch(e){}}
+$('cal').value=Math.max(-90,Math.min(90,cal));
+$('cal').oninput=()=>setCal(+$('cal').value);
+$('fit').onclick=()=>{if(sel&&sel.w)setCal(cal+diff(sel.w.az,aim().az))};
+cv.addEventListener('click',e=>{
+  let b=null,bd=70;
+  for(const p of planes){if(!p.s)continue;const d=Math.hypot(p.s.x-e.clientX,p.s.y-e.clientY);if(d<bd){bd=d;b=p}}
+  if(b){lock=b.icao;sel=b;lookup(b)}else lock=null;
+});
 
 $('go').onclick=async()=>{
   try{
@@ -66,6 +89,7 @@ $('go').onclick=async()=>{
     setInterval(poll,10000);requestAnimationFrame(draw);
   }catch(e){$('err').textContent=e.message||String(e)}
 };
+document.addEventListener('visibilitychange',()=>{if(!document.hidden)poll()});
 
 function onOri(e){
   if(e.type==='deviceorientation'&&orient.abs)return;
@@ -74,8 +98,6 @@ function onOri(e){
   orient.a=e.alpha;orient.b=e.beta;orient.g=e.gamma;
   orient.ios=e.webkitCompassHeading!=null?e.webkitCompassHeading:null;
 }
-
-// 카메라가 향한 방향(방위각, 고각)
 function aim(){
   let a=orient.a;
   if(orient.ios!=null)a=360-orient.ios;
@@ -83,15 +105,13 @@ function aim(){
   const vx=-(Math.cos(A)*Math.sin(G)+Math.sin(A)*Math.sin(B)*Math.cos(G));
   const vy=-(Math.sin(A)*Math.sin(G)-Math.cos(A)*Math.sin(B)*Math.cos(G));
   const vz=-(Math.cos(B)*Math.cos(G));
-  let h=Math.atan2(vx,vy)/R+ +$('cal').value;
-  return{az:(h+360)%360,el:Math.asin(Math.max(-1,Math.min(1,vz)))/R};
+  const h=Math.atan2(vx,vy)/R+cal;
+  return{az:(h+720)%360,el:Math.asin(Math.max(-1,Math.min(1,vz)))/R};
 }
 
 const SRC=[
  ...(PROXY?[['proxy',()=>`${PROXY}/point/${me.lat.toFixed(3)}/${me.lon.toFixed(3)}/40`]]:[]),
- ['adsb.lol',()=>`https://api.adsb.lol/v2/point/${me.lat.toFixed(3)}/${me.lon.toFixed(3)}/40`],
- ['airplanes.live',()=>`https://api.airplanes.live/v2/point/${me.lat.toFixed(3)}/${me.lon.toFixed(3)}/40`],
- ['adsb.fi',()=>`https://opendata.adsb.fi/api/v2/lat/${me.lat.toFixed(3)}/lon/${me.lon.toFixed(3)}/dist/40`]
+ ['adsb.lol',()=>`https://api.adsb.lol/v2/point/${me.lat.toFixed(3)}/${me.lon.toFixed(3)}/40`]
 ];
 async function poll(){
   if(!me||document.hidden)return;
@@ -101,35 +121,25 @@ async function poll(){
       const r=await fetch(url());
       if(!r.ok)throw new Error(r.status);
       const j=await r.json(),now=Date.now()/1000;
-      planes=(j.ac||j.aircraft||[]).filter(a=>a.lat!=null&&a.lon!=null&&typeof a.alt_baro==='number').map(a=>({
+      planes=(j.ac||[]).filter(a=>a.lat!=null&&a.lon!=null&&typeof a.alt_baro==='number').map(a=>({
         icao:a.hex,cs:(a.flight||'').trim(),lat:a.lat,lon:a.lon,alt:a.alt_baro*0.3048,
         v:(a.gs||0)*0.5144,trk:a.track||0,t:now-(a.seen_pos||0),vr:(a.baro_rate||0)*0.00508,type:a.t
       }));
-      $('st').textContent=`항공기 ${planes.length}대 (${name})`;return;
+      $('st').textContent=`항공기 ${planes.length}대`;return;
     }catch(e){errs.push(name+': '+(e.message||e))}
   }
-  try{
-    const d=0.6,r=await fetch(`https://opensky-network.org/api/states/all?lamin=${me.lat-d}&lamax=${me.lat+d}&lomin=${me.lon-d}&lomax=${me.lon+d}`);
-    if(!r.ok)throw new Error(r.status);
-    const j=await r.json();
-    planes=(j.states||[]).filter(s=>s[5]!=null&&s[6]!=null&&!s[8]).map(s=>({
-      icao:s[0],cs:(s[1]||'').trim(),lat:s[6],lon:s[5],alt:s[13]??s[7]??0,
-      v:s[9]||0,trk:s[10]||0,t:s[3]||s[4]||Date.now()/1000,vr:s[11]||0
-    }));
-    $('st').textContent=`항공기 ${planes.length}대 (opensky)`;
-  }catch(e){errs.push('opensky: '+(e.message||e));$('st').textContent='오류 → '+errs.join(' | ')}
+  $('st').textContent='오류 → '+errs.join(' | ');
 }
 
-// 지연 보정: 속도와 진행 방향으로 현재 위치 추정
 function where(p){
   const dt=Math.min(Date.now()/1000-p.t,60);
-  const dist=p.v*dt, tr=p.trk*R;
+  const dist=p.v*dt,tr=p.trk*R;
   const lat=p.lat+(dist*Math.cos(tr)/EARTH)/R;
   const lon=p.lon+(dist*Math.sin(tr)/(EARTH*Math.cos(p.lat*R)))/R;
   const alt=p.alt+p.vr*dt;
-  const dN=(lat-me.lat)*R*EARTH, dE=(lon-me.lon)*R*EARTH*Math.cos(me.lat*R);
+  const dN=(lat-me.lat)*R*EARTH,dE=(lon-me.lon)*R*EARTH*Math.cos(me.lat*R);
   const hd=Math.hypot(dN,dE);
-  return{az:(Math.atan2(dE,dN)/R+360)%360,el:Math.atan2(alt-me.alt,hd)/R,km:hd/1000,alt};
+  return{az:(Math.atan2(dE,dN)/R+360)%360,el:Math.atan2(alt-me.alt,hd)/R,km:hd/1000,alt,lat,lon};
 }
 const diff=(a,b)=>((a-b+540)%360)-180;
 
@@ -137,20 +147,34 @@ function draw(){
   const W=innerWidth,H=innerHeight;cx.clearRect(0,0,W,H);
   const m=aim(),HF=48,VF=64;let best=null,bd=99;
   for(const p of planes){
-    const w=where(p);p.w=w;
+    const w=where(p);p.w=w;p.s=null;
     const dx=diff(w.az,m.az),dy=w.el-m.el,ang=Math.hypot(dx,dy);
     if(ang<bd){bd=ang;best=p}
-    if(Math.abs(dx)<HF&&Math.abs(dy)<VF){
-      const x=W/2+dx/HF*W, y=H/2-dy/VF*H;
+    const on=Math.abs(dx)<HF&&Math.abs(dy)<VF;
+    const x=W/2+dx/HF*W,y=H/2-dy/VF*H;
+    if(on){
+      p.s={x,y};
       cx.fillStyle='rgba(232,240,246,.8)';cx.beginPath();cx.arc(x,y,4,0,7);cx.fill();
       cx.font='12px system-ui';cx.fillText(p.cs||p.icao,x+8,y+4);
     }
+    if(p.icao===lock){
+      cx.strokeStyle='#ffb400';cx.lineWidth=2;
+      if(on){cx.beginPath();cx.arc(x,y,13,0,7);cx.stroke()}
+      else{ // 화면 밖: 방향 화살표
+        const th=Math.atan2(y-H/2,x-W/2),r=Math.min(W,H)*0.38;
+        cx.save();cx.translate(W/2+Math.cos(th)*r,H/2+Math.sin(th)*r);cx.rotate(th);
+        cx.fillStyle='#ffb400';cx.beginPath();cx.moveTo(16,0);cx.lineTo(-10,-11);cx.lineTo(-10,11);cx.closePath();cx.fill();cx.restore();
+      }
+    }
   }
-  // 조준선
   cx.strokeStyle='#ffb400';cx.lineWidth=2;cx.beginPath();cx.arc(W/2,H/2,28,0,7);cx.stroke();
   cx.beginPath();cx.moveTo(W/2-40,H/2);cx.lineTo(W/2-20,H/2);cx.moveTo(W/2+20,H/2);cx.lineTo(W/2+40,H/2);cx.stroke();
-  if(best&&bd<12){if(!sel||sel.icao!==best.icao){sel=best;lookup(best)}}
+  if(lock){
+    const p=planes.find(q=>q.icao===lock);
+    if(p){sel=p;lookup(p)}else{lock=null;sel=null}
+  }else if(best&&bd<12){if(!sel||sel.icao!==best.icao){sel=best;lookup(best)}}
   else if(bd>=18)sel=null;
+  $('fit').hidden=!(lock&&sel);
   render(m);
   requestAnimationFrame(draw);
 }
@@ -169,17 +193,32 @@ async function lookup(p){
   }catch(e){}
 }
 
+const hav=(a,b,c,d)=>{const f=(c-a)*R,l=(d-b)*R,x=Math.sin(f/2)**2+Math.cos(a*R)*Math.cos(c*R)*Math.sin(l/2)**2;return 2*EARTH*Math.asin(Math.sqrt(x))/1000};
+const hm=ms=>new Date(ms).toLocaleTimeString('ko-KR',{hour:'2-digit',minute:'2-digit',hour12:false});
+const apName=x=>x?`${AP[x.iata_code]||x.municipality||x.name} (${x.iata_code||x.icao_code})`:'';
 let lastHTML='';
 function render(m){
   let h;
-  if(!sel||!sel.w){h=`<div class="cs">조준 중…</div><div class="meta">비행기 쪽으로 휴대폰을 향해 보세요.<br>조준 방향: 방위 ${m.az.toFixed(0)}° / 고각 ${m.el.toFixed(0)}°</div>`}
+  if(!sel||!sel.w){h=`<div class="cs">조준 중…</div><div class="meta">비행기 쪽으로 휴대폰을 향해 보세요. 화면의 점을 누르면 그 비행기를 고정합니다.<br>조준 방향: 방위 ${m.az.toFixed(0)}° / 고각 ${m.el.toFixed(0)}°</div>`}
   else{
     const c=cache[sel.icao]||{},rt=c.route,ac=c.ac,w=sel.w;
-    const o=rt&&rt.origin?`${rt.origin.municipality||rt.origin.name} (${rt.origin.iata_code||rt.origin.icao_code})`:'조회 중…';
-    const d=rt&&rt.destination?`${rt.destination.municipality||rt.destination.name} (${rt.destination.iata_code||rt.destination.icao_code})`:'';
-    h=`<div class="cs">${sel.cs||sel.icao}${rt&&rt.airline?' · '+rt.airline.name:''}</div>
+    const code=(rt&&rt.airline&&rt.airline.icao)||sel.cs.slice(0,3);
+    const al=AL[code]||(rt&&rt.airline&&rt.airline.name)||'';
+    const o=rt&&rt.origin?apName(rt.origin):'조회 중…',d=rt&&rt.destination?apName(rt.destination):'';
+    const fpm=Math.round(sel.vr*196.85/100)*100;
+    const vs=fpm>=500?`▲ 상승 ${fpm}ft/min`:fpm<=-500?`▼ 강하 ${-fpm}ft/min`:'― 순항';
+    let eta='';
+    const de=rt&&rt.destination,og=rt&&rt.origin;
+    if(de&&de.latitude!=null&&sel.v>50){
+      const km=hav(w.lat,w.lon,de.latitude,de.longitude),min=km*1000/sel.v/60;
+      eta=km<5?'목적지 도착 임박':`도착 예상 ${hm(Date.now()+min*60000)} (약 ${Math.round(min)}분 후) · 남은 직선거리 ${Math.round(km)}km`;
+    }
+    if(og&&og.latitude!=null)eta+=(eta?'<br>':'')+`출발지에서 ${Math.round(hav(og.latitude,og.longitude,w.lat,w.lon))}km 지점`;
+    if(eta)eta=`<div class="meta">${eta}<br>※ 시각은 휴대폰 기준, 현재 속도와 직선거리로 계산한 추정치</div>`;
+    h=`<div class="cs">${sel.cs||sel.icao}${al?' · '+al:''}${lock?' · 고정':''}</div>
     <div class="rt">${o}${d?' → '+d:''}</div>
-    <div class="meta">${ac?ac.type+' · ':(sel.type?sel.type+' · ':'')}고도 ${Math.round(w.alt*3.281/100)*100}ft · 속도 ${Math.round(sel.v*1.944)}kt · 거리 ${w.km.toFixed(1)}km</div>`;
+    <div class="meta">${ac?ac.type+' · ':(sel.type?sel.type+' · ':'')}고도 ${Math.round(w.alt*3.281/100)*100}ft · 속도 ${Math.round(sel.v*1.944)}kt · 거리 ${w.km.toFixed(1)}km</div>
+    <div class="vs">${vs}</div>${eta}`;
   }
   if(h!==lastHTML){$('card').innerHTML=h;lastHTML=h}
 }
